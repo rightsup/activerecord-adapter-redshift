@@ -1,16 +1,22 @@
 activerecord-redshift-adapter
 ==============================
 
-Amazon Redshift adapter for ActiveRecord 7 and 8 (Rails 7 and Rails 8).
+Amazon Redshift adapter for ActiveRecord.
 This is a fork from https://rubygems.org/gems/activerecord7-redshift-adapter hosted on a private Gitlab instance.
 It's itself forked the project from https://github.com/kwent/activerecord6-redshift-adapter
 
 Thanks to the authors.
 
+The adapter picks its implementation at load time based on the running ActiveRecord
+version (see `lib/active_record/connection_adapters/redshift_adapter.rb`). Support for
+new ActiveRecord versions is added as its own namespace alongside the existing ones,
+so the adapter keeps working across ActiveRecord upgrades rather than being tied to
+one major version.
+
 Usage
 -------------------
 
-For Rails 7 and Rails 8, write following in Gemfile:
+Write the following in your Gemfile:
 
 ```ruby
 gem 'activerecord-redshift-adapter'

@@ -49,8 +49,9 @@ module ActiveRecord
           @notice_receiver_sql_warnings = []
         end
 
-        def raw_execute(sql, name, async: false, allow_retry: false, materialize_transactions: true)
-          log(sql, name, async: async) do
+        def raw_execute(sql, name, binds = [], prepare: false, async: false, allow_retry: false, materialize_transactions: true, batch: false)
+          type_casted_binds = type_casted_binds(binds)
+          log(sql, name, binds, type_casted_binds, async: async) do
             with_raw_connection(allow_retry: allow_retry, materialize_transactions: materialize_transactions) do |conn|
               result = conn.async_exec(sql)
               verified!

@@ -3,7 +3,7 @@ Gem::Specification.new do |s|
   s.name = 'activerecord-redshift-adapter'
   s.version = '2.0.0'
   s.summary = 'Amazon Redshift adapter for ActiveRecord'
-  s.description = 'Amazon Redshift adapter for ActiveRecord 7.x and 8.x.'
+  s.description = 'Amazon Redshift adapter for ActiveRecord.'
   s.license = 'MIT'
 
   s.author = ['Nancy Foen', 'Minero Aoki', 'iamdbc', 'Quentin Rousseau', 'Johan Le Bray', 'Owen Stephens']
@@ -14,6 +14,6 @@ Gem::Specification.new do |s|
   s.require_path = 'lib'
 
   s.required_ruby_version = '>= 3.0'
-  s.add_runtime_dependency 'activerecord', '>= 7.0', '< 9'
+  s.add_runtime_dependency 'activerecord', '>= 7.0', '< 8.1'
   s.add_runtime_dependency 'pg', '~> 1.0'
 end
