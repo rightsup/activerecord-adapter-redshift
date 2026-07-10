@@ -56,7 +56,7 @@ published gem:
 # path to a local checkout:
 gem 'activerecord-redshift-adapter', path: '/path/to/activerecord-adapter-redshift'
 # or a branch on this repo:
-gem 'activerecord-redshift-adapter', git: 'https://github.com/pennylane-hq/activerecord-redshift-adapter', branch: 'your-branch'
+gem 'activerecord-redshift-adapter', git: 'https://github.com/rightsup/activerecord-adapter-redshift', branch: 'your-branch'
 ```
 
 Then `bundle install`, configure `config/database.yml` (or
