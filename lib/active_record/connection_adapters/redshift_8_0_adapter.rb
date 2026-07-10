@@ -17,12 +17,17 @@ module ActiveRecord
   module ConnectionAdapters
     module Redshift
       module ColumnMethods
-        # Redshift has no +pgcrypto+/+gen_random_uuid()+; UUID primary keys need the
-        # (older) +uuid-ossp+ extension's +uuid_generate_v4()+ instead.
+        # Confirmed against a real cluster: Redshift has neither
+        # uuid_generate_v4() (would need the uuid-ossp extension, and
+        # supports_extensions? is false -- Redshift doesn't support
+        # extensions at all) nor gen_random_uuid() (a Postgres 13+ builtin).
+        # There is no known database-side UUID default on Redshift, so unlike
+        # Postgres, this doesn't supply one automatically -- callers must
+        # pass an explicit :default or generate the value application-side
+        # (e.g. a before_create callback using SecureRandom.uuid).
         def primary_key(name, type = :primary_key, **options)
           return super unless type == :uuid
 
-          options[:default] = options.fetch(:default, 'uuid_generate_v4()')
           options[:primary_key] = true
           column name, type, options
         end
@@ -50,6 +55,12 @@ module ActiveRecord
     # whatever version of Rails' own Postgres support is loaded, and overrides
     # only where Redshift's SQL dialect and system catalog genuinely diverge from
     # modern PostgreSQL.
+    #
+    # Overrides annotated "confirmed against a real cluster" were verified
+    # against a Redshift cluster on the Current track, engine version
+    # 1.0.343555, patch 202. Redshift is a continuously patched managed
+    # service, so if its SQL surface changes, re-verify with
+    # redshift_verify.rb before trusting these findings on a newer version.
     class RedshiftAdapter < PostgreSQLAdapter
       ADAPTER_NAME = 'Redshift'
 
@@ -89,6 +100,130 @@ module ActiveRecord
         @connection_parameters = @connection_parameters.slice(*RS_VALID_CONN_PARAMS)
       end
 
+      # PostgreSQLAdapter#check_version raises if database_version < 9.5, on the
+      # assumption that a low reported version means a genuinely old, feature-poor
+      # server. Redshift reports itself as PostgreSQL 8.0.2 (confirmed against a
+      # real cluster) regardless of how current the actual service is, so that
+      # assumption doesn't hold here; skip the check entirely.
+      def check_version
+        nil
+      end
+
+      # configure_connection unconditionally does `self.client_min_messages =
+      # "warning"`. Confirmed against a real cluster: Redshift raises
+      # PG::InsufficientPrivilege ("permission denied to set parameter
+      # client_min_messages") for ordinary (non-superuser) roles, which would
+      # otherwise abort every single connect. This is purely a diagnostic
+      # verbosity setting, not something connection setup depends on, so
+      # swallow the failure instead of leaving the connection unusable.
+      def client_min_messages=(level)
+        super
+      rescue ActiveRecord::StatementInvalid
+        nil
+      end
+
+      # configure_connection also unconditionally sends `SET
+      # standard_conforming_strings = on`. Confirmed against a real cluster:
+      # Redshift raises "unrecognized configuration parameter" -- it genuinely
+      # doesn't have this GUC, not merely a permission restriction. The
+      # production-tested 7.0/7.1/7.2/8.0 forks never sent this in the first
+      # place, and quote_string (single-quote doubling) doesn't depend on it,
+      # so skip it entirely rather than rescue an expected failure every connect.
+      def set_standard_conforming_strings
+        nil
+      end
+
+      # PostgreSQLAdapter#configure_connection unconditionally sends `SET
+      # intervalstyle = iso_8601` (for ActiveSupport::Duration.parse-friendly
+      # interval formatting) and, for any configured :variables, `SET SESSION
+      # <key> TO <value>`. Confirmed against a real cluster: Redshift rejects
+      # "iso_8601" as an intervalstyle value, and separately its SQL grammar
+      # doesn't accept the optional SESSION keyword on SET at all ("keyword
+      # SESSION not supported") -- plain `SET <key> TO <value>` is
+      # semantically identical (SESSION is PostgreSQL's default SET scope
+      # anyway) and Redshift accepts that form. Neither of these is behind its
+      # own overridable method, so the only way to skip/adjust just these two
+      # spots is to replicate the rest of PostgreSQLAdapter#configure_connection
+      # here rather than calling super (which would hit both unconditionally).
+      # Known limitation: native INTERVAL columns read back from Redshift will
+      # be in its default format, not ISO 8601, so
+      # ActiveSupport::Duration.parse may not handle them -- unconfirmed, since
+      # this hasn't come up in real usage yet.
+      def configure_connection
+        check_version
+
+        if @config[:encoding]
+          @raw_connection.set_client_encoding(@config[:encoding])
+        end
+        self.client_min_messages = @config[:min_messages] || 'warning'
+        self.schema_search_path = @config[:schema_search_path] || @config[:schema_order]
+
+        unless ActiveRecord.db_warnings_action.nil?
+          @raw_connection.set_notice_receiver do |result|
+            message = result.error_field(PG::Result::PG_DIAG_MESSAGE_PRIMARY)
+            code = result.error_field(PG::Result::PG_DIAG_SQLSTATE)
+            level = result.error_field(PG::Result::PG_DIAG_SEVERITY)
+            @notice_receiver_sql_warnings << SQLWarning.new(message, code, level, nil, @pool)
+          end
+        end
+
+        set_standard_conforming_strings
+
+        variables = @config.fetch(:variables, {}).stringify_keys
+
+        variables.map do |k, v|
+          if v == ':default' || v == :default
+            internal_execute("SET #{k} TO DEFAULT", 'SCHEMA')
+          elsif !v.nil?
+            internal_execute("SET #{k} TO #{quote(v)}", 'SCHEMA')
+          end
+        end
+
+        add_pg_encoders
+        add_pg_decoders
+
+        schema_search_path # populate cache
+
+        reload_type_map
+      end
+
+      # See the configure_connection override above: Redshift's SQL grammar
+      # doesn't accept the SESSION keyword on SET, which
+      # PostgreSQLAdapter#reconfigure_connection_timezone uses unconditionally.
+      def reconfigure_connection_timezone
+        variables = @config.fetch(:variables, {}).stringify_keys
+        return if variables['timezone']
+
+        if default_timezone == :utc
+          raw_execute("SET timezone TO 'UTC'", 'SCHEMA')
+        else
+          raw_execute("SET timezone TO DEFAULT", 'SCHEMA')
+        end
+      end
+
+      # PostgreSQLAdapter#load_types_queries (used to populate the type map on
+      # every (re)connect) unconditionally joins pg_range, a catalog table
+      # PostgreSQL added in 9.2 for range types. Confirmed against a real
+      # cluster: Redshift's catalog doesn't have it ("relation pg_range does
+      # not exist"). supports_ranges? => false doesn't help here -- this query
+      # isn't gated by it. row["rngsubtype"] is read with bracket access (not
+      # fetch) by OID::TypeMapInitializer, so simply omitting the column/join
+      # is safe -- it's treated as "not a range type" for every row, which is
+      # correct since Redshift has none.
+      def load_types_queries(initializer, oids)
+        query = <<~SQL
+          SELECT t.oid, t.typname, t.typelem, t.typdelim, t.typinput, t.typtype, t.typbasetype
+          FROM pg_type as t
+        SQL
+        if oids
+          yield query + 'WHERE t.oid IN (%s)' % oids.join(', ')
+        else
+          yield query + initializer.query_conditions_for_known_type_names
+          yield query + initializer.query_conditions_for_known_type_types
+          yield query + initializer.query_conditions_for_array_types
+        end
+      end
+
       # --- Capability flags carried forward unchanged from the production-tested
       # redshift_7_0/7_1/7_2/8_0 forks (all four versions agreed on these). ---
       def supports_index_sort_order? = false
@@ -100,34 +235,40 @@ module ActiveRecord
       def supports_ranges? = false
       def supports_materialized_views? = false
 
-      # --- Capability flags new in Rails 8.x with no prior-fork precedent.
-      # Defaulted conservatively to false: an unsupported feature Rails skips is
-      # safer than an adapter emitting SQL Redshift's parser rejects. None of these
-      # have been verified against a real Redshift cluster -- confirm before
-      # flipping any of them to true. ---
-      def supports_check_constraints? = false
-      def supports_exclusion_constraints? = false
-      def supports_unique_constraints? = false
-      def supports_validate_constraints? = false
-      def supports_comments? = false
-      def supports_savepoints? = false
-      def supports_insert_on_conflict? = false
+      # --- Capability flags new in Rails 8.x with no prior-fork precedent,
+      # confirmed against a real Redshift cluster. ---
+      def supports_savepoints? = true          # nested transactions work
+      def supports_unique_constraints? = true  # ALTER TABLE ... ADD CONSTRAINT ... UNIQUE works
+      def supports_comments? = true             # COMMENT ON TABLE/COLUMN works
+      def supports_identity_columns? = true    # standard `GENERATED ALWAYS AS IDENTITY` column syntax works
+
+      # --- Same category, also confirmed against a real cluster, correctly false. ---
+      def supports_check_constraints? = false        # "CREATE TABLE CHECK constraint is not supported"
+      def supports_exclusion_constraints? = false     # EXCLUDE is a syntax error
+      def supports_insert_on_conflict? = false        # ON CONFLICT is a syntax error, not just unmatched
       alias supports_insert_on_duplicate_skip? supports_insert_on_conflict?
       alias supports_insert_on_duplicate_update? supports_insert_on_conflict?
       alias supports_insert_conflict_target? supports_insert_on_conflict?
-      def supports_insert_returning? = false
-      def supports_nulls_not_distinct? = false
-      def supports_native_partitioning? = false
-      def supports_identity_columns? = false
-      def supports_advisory_locks? = false
+      def supports_insert_returning? = false          # RETURNING is a syntax error
+      def supports_nulls_not_distinct? = false        # UNIQUE NULLS NOT DISTINCT is a syntax error
+      def supports_native_partitioning? = false       # PARTITION BY is a syntax error
+      def supports_pgcrypto_uuid? = false             # CREATE EXTENSION is a syntax error -- no extension mechanism at all
+      def supports_advisory_locks? = false            # pg_advisory_lock() doesn't exist
+      def supports_bulk_alter? = false                # multiple ADD COLUMN clauses in one ALTER TABLE is a syntax error
+      def supports_datetime_with_precision? = false   # "timestamp column does not support precision"
+
+      # --- Same category, still unverified against a real Redshift cluster --
+      # defaulted conservatively to false (see rationale above). Confirm
+      # before flipping any of these to true. supports_validate_constraints?
+      # was attempted but the check was confounded (it depended on a CHECK
+      # constraint, which isn't supported, so it never actually exercised
+      # VALIDATE CONSTRAINT itself) -- see MAINTENANCE.md. ---
+      def supports_validate_constraints? = false
       def supports_foreign_tables? = false
-      def supports_pgcrypto_uuid? = false
       def supports_optimizer_hints? = false
-      def supports_bulk_alter? = false
       def supports_partitioned_indexes? = false
       def supports_index_include? = false
       def supports_expression_index? = false
-      def supports_datetime_with_precision? = false
       def supports_restart_db_transaction? = false
       def supports_close_prepared? = false
 

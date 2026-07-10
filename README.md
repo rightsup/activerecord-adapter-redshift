@@ -45,6 +45,39 @@ class SomeModel < ApplicationRecord
 end
 ```
 
+Testing against a real app
+-------------------
+
+To try a branch/local checkout of this gem in an actual Rails app (or a plain
+Ruby script) before releasing it, point your `Gemfile` at it instead of the
+published gem:
+
+```ruby
+# path to a local checkout:
+gem 'activerecord-redshift-adapter', path: '/path/to/activerecord-adapter-redshift'
+# or a branch on this repo:
+gem 'activerecord-redshift-adapter', git: 'https://github.com/pennylane-hq/activerecord-redshift-adapter', branch: 'your-branch'
+```
+
+Then `bundle install`, configure `config/database.yml` (or
+`establish_connection`) with `adapter: redshift` and real credentials, and
+run what you'd normally run: `rails db:migrate`, `rails console`, your test
+suite. For a plain Ruby script (no Rails), see
+`script/verify_postgres_plumbing.rb` for a minimal `require 'active_record'`
++ `establish_connection` example.
+
+If what you're testing is *this adapter's* correctness rather than your
+app's, prefer the two scripts in [MAINTENANCE.md](MAINTENANCE.md) instead --
+they're narrower, faster, and don't need a full app to run.
+
+Maintenance
+-------------------
+
+See [MAINTENANCE.md](MAINTENANCE.md) for what to do when a new ActiveRecord
+version, a new Redshift engine version, or a new `pg` gem version breaks
+something -- includes a diagnostic procedure and two verification scripts
+(`script/verify_postgres_plumbing.rb`, `script/verify_redshift_capabilities.rb`).
+
 License
 ---------
 
