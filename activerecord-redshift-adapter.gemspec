@@ -14,6 +14,6 @@ Gem::Specification.new do |s|
   s.require_path = 'lib'
 
   s.required_ruby_version = '>= 3.0'
-  s.add_runtime_dependency 'activerecord', '>= 7.0', '< 8.1'
+  s.add_runtime_dependency 'activerecord', '>= 7.0', '< 8.2'
   s.add_runtime_dependency 'pg', '~> 1.0'
 end
