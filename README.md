@@ -8,10 +8,13 @@ It's itself forked the project from https://github.com/kwent/activerecord6-redsh
 Thanks to the authors.
 
 The adapter picks its implementation at load time based on the running ActiveRecord
-version (see `lib/active_record/connection_adapters/redshift_adapter.rb`). Support for
-new ActiveRecord versions is added as its own namespace alongside the existing ones,
-so the adapter keeps working across ActiveRecord upgrades rather than being tied to
-one major version.
+version (see `lib/active_record/connection_adapters/redshift_adapter.rb`). Versions
+7.0-7.2 each have their own namespace, forked from Rails' PostgreSQL adapter of that
+era. Rails 8.0 and up are served by a single adapter that subclasses
+`ActiveRecord::ConnectionAdapters::PostgreSQLAdapter` directly, so it tracks whatever
+Postgres adapter behavior the installed Rails version provides and only overrides the
+places where Redshift's SQL dialect and system catalog genuinely diverge -- no new
+namespace is needed as Rails 8.x continues to release.
 
 Usage
 -------------------
