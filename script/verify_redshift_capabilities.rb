@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 #
 # Checks the RedshiftAdapter capability flags (the `supports_*?` methods in
-# redshift_8_0_adapter.rb) against a real Redshift cluster. Run this whenever
+# redshift_adapter.rb) against a real Redshift cluster. Run this whenever
 # there's a new Redshift engine version/patch -- see MAINTENANCE.md. Never
 # prints REDSHIFT_URL or any connection detail, only pass/fail per check, so
 # it's safe to paste the output back without leaking credentials.

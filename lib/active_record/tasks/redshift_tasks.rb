@@ -1,13 +1,21 @@
 # frozen_string_literal: true
 
-if ActiveRecord.version >= Gem::Version.new('8.0.0')
-  require_relative 'redshift_8_0_tasks'
-elsif ActiveRecord.version >= Gem::Version.new('7.2.0')
-  require_relative 'redshift_7_2_tasks'
-elsif ActiveRecord.version >= Gem::Version.new('7.1.0')
-  require_relative 'redshift_7_1_tasks'
-elsif ActiveRecord.version >= Gem::Version.new('7.0.0')
-  require_relative 'redshift_7_0_tasks'
-else
-  raise 'no compatible version of ActiveRecord detected'
+require 'active_record/tasks/postgresql_database_tasks'
+
+module ActiveRecord
+  module Tasks # :nodoc:
+    # Subclasses PostgreSQLDatabaseTasks so it inherits pg_dump/psql-based
+    # structure dump/load, create/drop, and
+    # AbstractTasks#check_current_protected_environment! automatically. The only
+    # genuine Redshift difference is its default maintenance database name.
+    class RedshiftDatabaseTasks < PostgreSQLDatabaseTasks # :nodoc:
+      private
+
+      def public_schema_config
+        configuration_hash.merge(database: 'redshift', schema_search_path: 'public')
+      end
+    end
+
+    DatabaseTasks.register_task(/redshift/, RedshiftDatabaseTasks)
+  end
 end

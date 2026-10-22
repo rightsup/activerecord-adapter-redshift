@@ -1,6 +1,6 @@
 # Maintenance guide
 
-This gem's Rails 8.x adapter (`lib/active_record/connection_adapters/redshift_8_0_adapter.rb`)
+This gem's Rails 8.x adapter (`lib/active_record/connection_adapters/redshift_adapter.rb`)
 is `RedshiftAdapter < ActiveRecord::ConnectionAdapters::PostgreSQLAdapter`. It
 inherits everything and overrides only the specific methods where Redshift's
 SQL dialect, system catalog, or session-parameter support genuinely diverge
@@ -33,7 +33,7 @@ skill; the version-specific facts below will go stale, this won't.
 3. **Find the exact method from the backtrace** -- the outermost frame still inside the `activerecord-X.Y.Z` gem (not inside this repo, not inside `pg`). That's the Rails method that issued the failing call.
 4. **Check whether `RedshiftAdapter` already overrides that method:**
    ```
-   grep -n "def <method_name>" lib/active_record/connection_adapters/redshift_8_0_adapter.rb
+   grep -n "def <method_name>" lib/active_record/connection_adapters/redshift_adapter.rb
    ```
    - **Already overridden:** the override itself is stale for the new version. Fetch the current real source (see below) and compare line-by-line against the override.
    - **Not overridden:** this is a new divergence. Decide the override shape (step 5).
@@ -86,8 +86,8 @@ one version in isolation.
    has not happened yet as of Rails 8.1 -- inheritance absorbed the
    `Column#initialize` and `RedshiftDatabaseTasks`/`AbstractTasks` changes
    without one). If it ever does, the new namespace should still subclass
-   `PostgreSQLAdapter`; only the dispatch branch in
-   `lib/active_record/connection_adapters/redshift_adapter.rb` needs to split.
+   `PostgreSQLAdapter`, with `lib/active_record/connection_adapters/redshift_adapter.rb`
+   choosing between the two by `ActiveRecord.version`.
 
 ## B. New Redshift engine version/patch
 
@@ -110,7 +110,7 @@ one version in isolation.
    ["Known Redshift SQL facts" table](#known-redshift-sql-facts) below:
    - A check that was `FAIL` is now `PASS` → Redshift gained the feature.
      Flip the corresponding `supports_*?` (or related override) from `false`
-     to `true` in `redshift_8_0_adapter.rb`, and update the table.
+     to `true` in `redshift_adapter.rb`, and update the table.
    - A check that was `PASS` is now `FAIL` → don't assume Redshift regressed.
      First check whether the script's own SQL is what changed (e.g. a syntax
      Rails itself deprecated). If the SQL is still valid and Redshift
@@ -119,7 +119,7 @@ one version in isolation.
      `check.call('label') { conn.execute(...) }` block following the existing
      pattern -- each check is independent and swallows its own error.
 5. Update the version-provenance comment at the top of the `RedshiftAdapter`
-   class in `redshift_8_0_adapter.rb` with the new engine version/patch and
+   class in `redshift_adapter.rb` with the new engine version/patch and
    date, and update the table below.
 
 ## C. New `pg` gem version
@@ -161,11 +161,12 @@ diagnostic algorithm above.
 | `reconfigure_connection_timezone` | Same `SET SESSION` grammar issue, this time for `timezone`. | `PG::InternalError: keyword SESSION not supported` |
 | `load_types_queries` | Joins `pg_range`, a catalog table PostgreSQL added in 9.2 that Redshift's older catalog lacks. Not gated by `supports_ranges?` in current Rails. | `PG::UndefinedTable: relation "pg_range" does not exist` |
 
-**Not yet fixed / flagged as a known risk, not exercised by normal connection
-setup:** `session_auth=` sends `SET SESSION AUTHORIZATION <user>` -- there,
-`SESSION` is part of the fixed clause name, not an optional keyword you can
-just drop, so if Redshift rejects it too it needs a different mechanism
-entirely. Rarely called in practice; investigate if it ever comes up.
+**Not supported, not needed:** `session_auth=` sends `SET SESSION AUTHORIZATION
+<user>`. There, `SESSION` is part of the fixed clause name, not an optional
+keyword that can be dropped, so Redshift's grammar likely rejects it. Normal
+connection setup never calls it, and the only known consumer (eddy) never
+impersonates a database user, so it is left as is. If a consumer ever needs
+it, it needs a different mechanism.
 
 ## Known Redshift SQL facts
 
@@ -205,8 +206,9 @@ constraints. Left as an example of a confounded check in case a similar
 pattern comes up again -- when a test depends on a second unverified feature,
 isolate it before trusting a `FAIL`.)
 
-**Not yet checked** (no script coverage yet -- add a `check.call` block if you
-need one verified): `supports_foreign_tables?`, `supports_optimizer_hints?`,
+**Not checked, and not reached by eddy** (the only known consumer runs read-only
+reporting queries, with no DDL, hints, partitioning or index features; add a
+`check.call` block if you need one verified): `supports_foreign_tables?`, `supports_optimizer_hints?`,
 `supports_partitioned_indexes?`, `supports_index_include?`,
 `supports_expression_index?` (Redshift has no user-managed indexes at all --
 `indexes`/`add_index`/etc. are already hardcoded no-ops regardless of these
