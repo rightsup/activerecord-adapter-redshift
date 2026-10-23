@@ -29,6 +29,32 @@ puts "== ActiveRecord #{ActiveRecord.version} (requested #{ar_version}) =="
 $LOAD_PATH.unshift File.expand_path('../lib', __dir__)
 require 'active_record/connection_adapters/redshift_adapter'
 
+puts '-- override-drift guard (RedshiftAdapter overrides still exist upstream)'
+# RedshiftAdapter overrides these PostgreSQLAdapter/AbstractAdapter methods --
+# most are private/semi-private Rails internals with no stability guarantee
+# (e.g. reconfigure_connection_timezone was already restructured away on
+# Rails main as of this writing). If a future Rails version renames or
+# removes one, the override silently becomes dead code -- inherited Postgres
+# behavior "returns" unnoticed instead of raising -- rather than a loud
+# failure. This is a static reflection check, no database required. See
+# MAINTENANCE.md.
+OVERRIDDEN_METHODS = %i[
+  check_version client_min_messages= set_standard_conforming_strings
+  configure_connection reconfigure_connection_timezone load_types_queries
+  truncate reset! create_table_definition update_table_definition
+  column_definitions primary_keys
+].freeze
+pg_adapter_class = ActiveRecord::ConnectionAdapters::RedshiftAdapter.superclass
+missing_overrides = OVERRIDDEN_METHODS.reject do |name|
+  pg_adapter_class.method_defined?(name) ||
+    pg_adapter_class.private_method_defined?(name) ||
+    pg_adapter_class.protected_method_defined?(name)
+end
+if missing_overrides.any?
+  raise "#{pg_adapter_class} no longer defines: #{missing_overrides.join(', ')} -- " \
+        're-check the corresponding RedshiftAdapter override against upstream source (see MAINTENANCE.md)'
+end
+
 ActiveRecord::Base.establish_connection(
   adapter: 'redshift',
   host: ENV.fetch('PG_HOST', 'localhost'),
@@ -92,6 +118,18 @@ rescue ActiveRecord::Rollback
   nil
 end
 raise 'rollback did not roll back' unless conn.select_value('SELECT count(*) FROM widgets') == 2
+
+step.call('truncate (singular, RedshiftAdapter#truncate override)')
+conn.truncate('widgets')
+raise 'truncate did not empty the table' unless conn.select_value('SELECT count(*) FROM widgets') == 0
+conn.execute("INSERT INTO widgets (name, quantity, price, created_at, updated_at) VALUES ('foo', 3, 9.99, now(), now())")
+
+step.call('truncate_tables (plural -- not overridden by RedshiftAdapter; this is what fixture loading and test-DB cleanup actually call)')
+conn.drop_table('gadgets', if_exists: true)
+conn.create_table(:gadgets, id: false) { |t| t.integer :id }
+conn.truncate_tables('widgets', 'gadgets')
+raise 'truncate_tables did not empty widgets' unless conn.select_value('SELECT count(*) FROM widgets') == 0
+conn.drop_table('gadgets', if_exists: true)
 
 step.call('change_column_default')
 conn.change_column_default(:widgets, :quantity, 0)

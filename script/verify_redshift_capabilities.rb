@@ -110,6 +110,13 @@ check.call('VALIDATE CONSTRAINT (supports_validate_constraints?)') do
   conn.execute("DROP TABLE IF EXISTS #{TABLE}_fkparent")
 end
 
+check.call('multi-table TRUNCATE, e.g. "TRUNCATE TABLE a, b" (build_truncate_statements -- what fixture loading / truncate_tables actually sends, not overridden by RedshiftAdapter)') do
+  conn.execute("DROP TABLE IF EXISTS #{TABLE}_trunc2")
+  conn.execute("CREATE TABLE #{TABLE}_trunc2 (id integer)")
+  conn.execute("TRUNCATE TABLE #{TABLE}, #{TABLE}_trunc2")
+  conn.execute("DROP TABLE IF EXISTS #{TABLE}_trunc2")
+end
+
 check.call('INSERT ... RETURNING (supports_insert_returning?)') do
   conn.execute("INSERT INTO #{TABLE} (id, name) VALUES (999, 'ret') RETURNING id")
   conn.execute("DELETE FROM #{TABLE} WHERE id = 999")
