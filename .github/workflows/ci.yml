@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  plumbing:
+    name: ActiveRecord ${{ matrix.activerecord }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        activerecord: ['~> 8.0.0', '~> 8.1.0']
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: redshift_adapter_plumbing_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.4'
+      - name: Verify adapter plumbing against PostgreSQL
+        env:
+          PG_HOST: localhost
+          PG_PORT: 5432
+          PG_USER: postgres
+          PG_PASSWORD: postgres
+        run: |
+          gem install pg
+          gem install activerecord -v "${{ matrix.activerecord }}"
+          ruby script/verify_postgres_plumbing.rb "${{ matrix.activerecord }}"
+      # Keeps the cluster introspection script from rotting. This runs it on
+      # PostgreSQL, so it cannot prove Redshift accepts anything; the real
+      # check is running it against a cluster (see MAINTENANCE.md, section A).
+      - name: Smoke-test the introspection script against PostgreSQL
+        env:
+          REDSHIFT_URL: redshift://postgres:postgres@localhost:5432/redshift_adapter_plumbing_test
+        run: |
+          ruby script/verify_redshift_introspection.rb "${{ matrix.activerecord }}"
