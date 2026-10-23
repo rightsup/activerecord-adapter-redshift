@@ -13,13 +13,19 @@ of them changed:
 
 | Changed | Detect with | Section |
 |---|---|---|
-| ActiveRecord / Rails version | `script/verify_postgres_plumbing.rb` | [A](#a-new-activerecord-rails-version) |
-| Redshift engine version/patch | `script/verify_redshift_capabilities.rb` | [B](#b-new-redshift-engine-versionpatch) |
+| ActiveRecord / Rails version | `script/verify_postgres_plumbing.rb` **and** `script/verify_redshift_introspection.rb` | [A](#a-new-activerecord-rails-version) |
+| Redshift engine version/patch | `script/verify_redshift_capabilities.rb` (and the introspection script) | [B](#b-new-redshift-engine-versionpatch) |
 | `pg` gem version | `script/verify_postgres_plumbing.rb` with the new `pg` version pinned | [C](#c-new-pg-gem-version) |
 
-Both scripts are self-contained, take the version to test as a parameter (or
+The scripts are self-contained, take the version to test as a parameter (or
 via `Gemfile`/`REDSHIFT_URL`), and never assume today's specific version
 numbers -- they'll keep working after this document is stale.
+
+**A passing PostgreSQL run is necessary but not sufficient.** PostgreSQL accepts
+catalog SQL that Redshift rejects, so the plumbing script can't see
+Redshift-only failures. After any ActiveRecord bump, also run the introspection
+script (section A, step 3) against a cluster, or capture its SQL and run that
+in the cluster's SQL editor.
 
 ## The general diagnostic algorithm
 
@@ -76,12 +82,33 @@ one version in isolation.
    (e.g. `8.2.0`). This exercises connect, DDL, DML, transactions, schema
    introspection, `explain`, and rake-task class resolution -- the exact
    query-execution "plumbing" that has broken on version bumps before.
-2. **Passes:** nothing to do. This is the point of subclassing
-   `PostgreSQLAdapter` -- inherited behavior tracks upstream for free.
-3. **Fails:** follow the [general diagnostic algorithm](#the-general-diagnostic-algorithm) above.
-4. If you're intentionally raising the supported ceiling, update the
+2. **Passes:** the plumbing is fine, but that is *all* this proves. PostgreSQL
+   accepts catalog SQL that Redshift rejects, so a green run says nothing about
+   whether Redshift accepts what the new Rails version inherits. The precedent
+   is `primary_keys`: upstream's query passed on PostgreSQL and Redshift
+   rejected it (see "Known connection-setup overrides"). Do step 3.
+3. Run the introspection check against a real cluster (safest handling: export
+   `REDSHIFT_URL` in your own terminal, never paste it into an agent
+   conversation):
+   ```bash
+   export REDSHIFT_URL='redshift://user:password@host:port/database'
+   bundle exec ruby script/verify_redshift_introspection.rb <new-version>
+   ```
+   If you can't reach a cluster from your machine, capture the SQL on a local
+   PostgreSQL instead and run it where you can:
+   ```bash
+   PRINT_SQL=1 REDSHIFT_URL='redshift://postgres:postgres@localhost:5432/redshift_adapter_plumbing_test' \
+     bundle exec ruby script/verify_redshift_introspection.rb <new-version>
+   ```
+   Paste each statement under "Distinct SCHEMA statements" into the cluster's
+   SQL editor, one at a time. All should succeed except
+   `SET client_min_messages` ("permission denied" for non-superuser roles --
+   the adapter rescues that on purpose). Any other failure is a new Redshift
+   incompatibility.
+4. **Fails (either script):** follow the [general diagnostic algorithm](#the-general-diagnostic-algorithm) above.
+5. If you're intentionally raising the supported ceiling, update the
    `activerecord` constraint in `activerecord-redshift-adapter.gemspec`.
-5. Only create a new `redshift_8_1`-style directory/namespace if a change is
+6. Only create a new `redshift_8_1`-style directory/namespace if a change is
    so fundamental it can't be expressed as an override on the same class (this
    has not happened yet as of Rails 8.1 -- inheritance absorbed the
    `Column#initialize` and `RedshiftDatabaseTasks`/`AbstractTasks` changes
@@ -220,3 +247,47 @@ practically checkable via SQL).
 Every flag above defaults to `false` until *positively confirmed* `true`
 against a real cluster -- if you see a flag `false` that isn't in either table
 above, it simply hasn't been tested yet, not that it's known to fail.
+
+## Supported surface
+
+What has actually been checked against a real Redshift cluster, as opposed to
+inherited from `PostgreSQLAdapter` and assumed. Update this table whenever a
+check is run or a gap is closed.
+
+| Surface | Status | Evidence |
+|---|---|---|
+| Connect, session setup (`SET statement_timeout`, `SET timezone`, `SHOW search_path`), type-map queries | Verified | 2026-07-10 (engine 1.0.343555, patch 202), and re-run statement by statement in a SQL editor on 2026-10-23 |
+| Table discovery for a model (`data_sources`), `column_definitions`, `SHOW max_identifier_length` | Verified (statements) | SQL editor, 2026-10-23. Run `script/verify_redshift_introspection.rb` against a cluster to record a Ruby-level result |
+| `primary_keys` on a table with no declared key | Verified (statement) | SQL editor, 2026-10-23: no error, zero rows. Upstream's version is rejected -- see "Known connection-setup overrides" |
+| `primary_keys` on a table that *declares* a key | Unverified | The introspection script checks it (single and composite) using scratch tables |
+| Reads (`where`, `group`, aggregates, `limit`) | Plain ActiveRecord SQL | Not adapter-specific |
+| `insert_all!`; single-row `save` on a table with **no** declared primary key | Plain `INSERT`, no `RETURNING` or sequence lookup | Traced on PostgreSQL. A model with no primary key makes Rails pass `pk = false`, which skips `default_sequence_name` |
+| `UNLOAD` through `exec_query` | Passes through unchanged | Only a local analogue (`$$` body, trailing query-log comment, empty result) was run; a real `UNLOAD` needs S3 and an IAM role |
+| Connection lifecycle (`active?`, `reconnect!`, `reset!`) | Same logic as upstream | `active?` sends the same `";"` ping the earlier per-version forks used |
+| SSL parameters (`sslmode`, `sslrootcert`, `connect_timeout`) | Reach `PG.connect` | Checked on the adapter's connection-parameter whitelist; a real handshake needs a cluster |
+
+**Inherited and not verified on Redshift.** These come straight from the
+PostgreSQL adapter, are written for PostgreSQL 9+ catalogs, and are not reached
+by read-mostly reporting apps. Treat them as unsupported until a check says
+otherwise:
+
+- `foreign_keys`, `unique_constraints` (they use `generate_subscripts`),
+  `check_constraints` (`supports_check_constraints?` is `false`)
+- `table_comment` / `table_options` (`obj_description`, `pg_inherits`)
+- `encoding`, `collation`, `ctype`
+- `serial_sequence`, `default_sequence_name`, `pk_and_sequence_for`
+  (`pg_get_serial_sequence`)
+- Schema dumps, and migrations beyond the DDL covered by the capabilities script
+
+**Latent trap.** A single-row `save` is safe only on tables with no declared
+primary key. Redshift lets you declare an informational key; if a table gains
+one, `save` goes through `default_sequence_name` and `pg_get_serial_sequence`,
+which has never run on Redshift.
+
+**Legacy type mappings.** `NATIVE_DATABASE_TYPES` still maps `float` to
+`decimal` (Redshift's `DECIMAL` default is precision 18, scale 0) and `text`
+to `varchar` (256 characters by default), carried over from the earlier forks.
+This only affects migrations and schema DSL, not reads or inserts.
+`ActiveRecord::ConnectionHandling#redshift_connection` in
+`redshift_adapter.rb` is probably vestigial on Rails 8 (adapters resolve
+through `ConnectionAdapters.register`); confirm before removing it.

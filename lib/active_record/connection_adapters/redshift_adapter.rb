@@ -68,7 +68,8 @@ module ActiveRecord
     # against a Redshift cluster on the Current track, engine version
     # 1.0.343555, patch 202. Redshift is a continuously patched managed
     # service, so if its SQL surface changes, re-verify with
-    # redshift_verify.rb before trusting these findings on a newer version.
+    # script/verify_redshift_capabilities.rb before trusting these findings on a
+    # newer version.
     class RedshiftAdapter < PostgreSQLAdapter
       ADAPTER_NAME = 'Redshift'
 
