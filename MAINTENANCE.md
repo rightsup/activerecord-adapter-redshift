@@ -160,6 +160,7 @@ diagnostic algorithm above.
 | `configure_connection` (whole method) | Two problems in one inherited method: (1) `SET intervalstyle = iso_8601` -- Redshift recognizes the parameter but rejects the value; (2) `SET SESSION <key> TO <value>` for `:variables` -- Redshift's grammar rejects the `SESSION` keyword entirely. Neither line has its own override point. | `PG::InvalidParameterValue: unrecognized "intervalstyle" value: "iso_8601"`; `PG::InternalError: keyword SESSION not supported` |
 | `reconfigure_connection_timezone` | Same `SET SESSION` grammar issue, this time for `timezone`. | `PG::InternalError: keyword SESSION not supported` |
 | `load_types_queries` | Joins `pg_range`, a catalog table PostgreSQL added in 9.2 that Redshift's older catalog lacks. Not gated by `supports_ranges?` in current Rails. | `PG::UndefinedTable: relation "pg_range" does not exist` |
+| `primary_keys` | Upstream compares `attnum = ANY(pg_index.indkey)` (an `int2vector`, which Redshift's `ANY()` doesn't accept) and orders by `array_position`. Runs on the first `primary_key` call for every model with a real table, so without it no model loads. Reads `pg_constraint.conkey` (a real `int2[]`) instead. Composite keys come back in column order, not key order. Confirmed on a real cluster 2026-10-23. | `op ANY/ALL (array) requires array on right side` |
 
 **Not supported, not needed:** `session_auth=` sends `SET SESSION AUTHORIZATION
 <user>`. There, `SESSION` is part of the fixed clause name, not an optional

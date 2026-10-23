@@ -104,6 +104,27 @@ raise 'table_exists? wrong' unless conn.table_exists?('widgets')
 raise 'data_source_exists? wrong' unless conn.data_source_exists?('widgets')
 raise 'schema_exists? wrong' unless conn.schema_exists?('public')
 
+step.call('primary_keys (RedshiftAdapter#primary_keys override: none / single / composite)')
+# Postgres accepts upstream's query too, so a passing result below can't prove
+# the override is what runs -- assert that directly (Redshift rejects upstream's).
+unless conn.method(:primary_keys).owner == ActiveRecord::ConnectionAdapters::RedshiftAdapter
+  raise 'primary_keys is no longer overridden by RedshiftAdapter -- upstream query fails on Redshift (see MAINTENANCE.md)'
+end
+conn.drop_table('pk_none', if_exists: true)
+conn.drop_table('pk_single', if_exists: true)
+conn.drop_table('pk_composite', if_exists: true)
+conn.create_table(:pk_none, id: false) { |t| t.integer :a }
+conn.create_table(:pk_single, id: false) { |t| t.integer :id, null: false }
+conn.execute('ALTER TABLE pk_single ADD PRIMARY KEY (id)')
+conn.create_table(:pk_composite, id: false) { |t| t.integer :a, null: false; t.integer :b, null: false }
+conn.execute('ALTER TABLE pk_composite ADD PRIMARY KEY (a, b)')
+raise "primary_keys(none) = #{conn.primary_keys('pk_none').inspect}" unless conn.primary_keys('pk_none') == []
+raise "primary_keys(single) = #{conn.primary_keys('pk_single').inspect}" unless conn.primary_keys('pk_single') == ['id']
+raise "primary_keys(composite) = #{conn.primary_keys('pk_composite').inspect}" unless conn.primary_keys('pk_composite') == %w[a b]
+conn.drop_table('pk_none')
+conn.drop_table('pk_single')
+conn.drop_table('pk_composite')
+
 step.call('serial_sequence (no stdout spam expected)')
 conn.serial_sequence('widgets', 'id')
 

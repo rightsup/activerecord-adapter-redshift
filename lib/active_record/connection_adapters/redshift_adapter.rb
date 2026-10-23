@@ -232,6 +232,32 @@ module ActiveRecord
         end
       end
 
+      # PostgreSQL::SchemaStatements#primary_keys (called by `primary_key` on
+      # the first use of any model backed by a real table, abstract parent's
+      # `primary_key = nil` notwithstanding) compares `a.attnum =
+      # ANY(i.indkey)` and orders by `array_position(i.indkey, a.attnum)`.
+      # Confirmed against a real cluster: Redshift rejects it with "op ANY/ALL
+      # (array) requires array on right side" -- pg_index.indkey is an
+      # int2vector, which Redshift's ANY() doesn't treat as an array (and
+      # Redshift's array_position() is a SUPER-array function, so no help).
+      # Without this override every model fails to load its schema. This reads
+      # pg_constraint instead, where conkey is a true int2[] that ANY()
+      # accepts -- the same construct the earlier per-version forks ran on
+      # Redshift. Known difference from upstream: a composite key comes back
+      # in table column order rather than key order, because array_position
+      # isn't usable to recover key order here.
+      def primary_keys(table_name)
+        query_values(<<~SQL, 'SCHEMA')
+          SELECT attr.attname
+            FROM pg_attribute attr
+            INNER JOIN pg_constraint cons
+              ON attr.attrelid = cons.conrelid AND attr.attnum = ANY(cons.conkey)
+           WHERE cons.contype = 'p'
+             AND cons.conrelid = #{quote(quote_table_name(table_name))}::regclass
+           ORDER BY attr.attnum
+        SQL
+      end
+
       # --- Capability flags carried forward unchanged from the earlier
       # per-version forks (removed), which all agreed on these. ---
       def supports_index_sort_order? = false
